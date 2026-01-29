@@ -1,1 +1,4 @@
 /target
+*.xml
+*.zip
+tmp
