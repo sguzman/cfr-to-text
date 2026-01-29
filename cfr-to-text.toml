@@ -1,0 +1,37 @@
+[input]
+paths = ["tmp/cfr"]
+recursive = true
+follow_symlinks = false
+globs = ["**/*.xml"]
+xml_only = true
+
+[parse]
+include_elements = []
+exclude_elements = []
+heading_elements = ["HD", "HED"]
+paragraph_elements = ["P", "FP"]
+max_depth = null
+min_text_len = 1
+strip_whitespace = true
+collapse_whitespace = true
+preserve_line_breaks = false
+
+[emit]
+include_element_name = true
+include_element_path = false
+include_source_file = true
+record_delimiter = "\n"
+heading_prefix = "# "
+paragraph_prefix = ""
+heading_blank_line = true
+
+[output]
+output_dir = "out"
+output_file = null
+format = "Plain"
+overwrite = false
+
+[logging]
+level = "info"
+format = "Pretty"
+file = null
