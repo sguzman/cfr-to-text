@@ -37,6 +37,7 @@ Key extract flags:
 - `--glob <GLOB>` (repeatable)
 - `--output-dir <DIR>` or `--output <FILE>`
 - `--format <plain|jsonl>`
+- `--split-max-bytes <BYTES>` / `--no-split`
 - `--include-element <NAME>` / `--exclude-element <NAME>`
 - `--heading-element <NAME>` / `--paragraph-element <NAME>`
 - `--emit-element` / `--emit-path` / `--emit-source`
@@ -82,6 +83,8 @@ heading_blank_line = true
 output_dir = "out"
 format = "Plain"
 overwrite = false
+split_max_bytes = 1048576
+# Set to 0 to disable splitting
 ```
 
 ## Output formats

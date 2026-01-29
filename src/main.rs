@@ -91,6 +91,14 @@ struct ExtractArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     overwrite: bool,
 
+    /// Split output files larger than this size (bytes)
+    #[arg(long, value_name = "BYTES")]
+    split_max_bytes: Option<u64>,
+
+    /// Disable output file splitting
+    #[arg(long = "no-split", action = ArgAction::SetTrue)]
+    no_split: bool,
+
     /// Minimum text length to emit
     #[arg(long, value_name = "N")]
     min_text_len: Option<usize>,
@@ -222,6 +230,8 @@ struct OutputConfig {
     output_file: Option<PathBuf>,
     format: OutputFormat,
     overwrite: bool,
+    #[serde(default = "default_split_max_bytes")]
+    split_max_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -287,6 +297,7 @@ impl Default for Config {
                 output_file: None,
                 format: OutputFormat::Plain,
                 overwrite: false,
+                split_max_bytes: Some(1_048_576),
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
@@ -295,6 +306,10 @@ impl Default for Config {
             },
         }
     }
+}
+
+fn default_split_max_bytes() -> Option<u64> {
+    Some(1_048_576)
 }
 
 fn main() -> Result<()> {
@@ -324,11 +339,13 @@ fn main() -> Result<()> {
     };
 
     apply_global_overrides(&mut config, &cli);
+    normalize_output_config(&mut config);
     init_logging(&config.logging)?;
 
     match cli.command {
         Commands::Extract(args) => {
             apply_extract_overrides(&mut config, &args);
+            normalize_output_config(&mut config);
             run_extract(&config, &args)
         }
         Commands::PrintConfig(_) => print_config(&config),
@@ -411,6 +428,12 @@ fn apply_extract_overrides(config: &mut Config, args: &ExtractArgs) {
     if args.overwrite {
         config.output.overwrite = true;
     }
+    if let Some(split_max_bytes) = args.split_max_bytes {
+        config.output.split_max_bytes = Some(split_max_bytes);
+    }
+    if args.no_split {
+        config.output.split_max_bytes = None;
+    }
     if let Some(min_text_len) = args.min_text_len {
         config.parse.min_text_len = min_text_len;
     }
@@ -458,6 +481,12 @@ fn apply_extract_overrides(config: &mut Config, args: &ExtractArgs) {
     }
     if let Some(delim) = &args.record_delimiter {
         config.emit.record_delimiter = delim.clone();
+    }
+}
+
+fn normalize_output_config(config: &mut Config) {
+    if let Some(0) = config.output.split_max_bytes {
+        config.output.split_max_bytes = None;
     }
 }
 
@@ -517,27 +546,37 @@ fn run_extract(config: &Config, args: &ExtractArgs) -> Result<()> {
     let start = Utc::now();
 
     if let Some(output_file) = &config.output.output_file {
-        let mut writer = create_writer(output_file, config.output.overwrite)?;
+        let mut sink = OutputSink::new_file(
+            output_file.to_path_buf(),
+            config.output.format,
+            config.output.overwrite,
+            config.output.split_max_bytes,
+        )?;
         for path in &input_paths {
-            total_records += process_file(path, &mut writer, config)?;
+            total_records += process_file(path, &mut sink, config)?;
         }
-        writer.flush().context("flush output")?;
+        sink.flush().context("flush output")?;
     } else if let Some(output_dir) = &config.output.output_dir {
         fs::create_dir_all(output_dir)
             .with_context(|| format!("create output dir {}", output_dir.display()))?;
         for path in &input_paths {
             let out_path = output_path_for_input(output_dir, path, config.output.format)?;
-            let mut writer = create_writer(&out_path, config.output.overwrite)?;
-            total_records += process_file(path, &mut writer, config)?;
-            writer.flush().with_context(|| format!("flush {}", out_path.display()))?;
+            let mut sink = OutputSink::new_file(
+                out_path,
+                config.output.format,
+                config.output.overwrite,
+                config.output.split_max_bytes,
+            )?;
+            total_records += process_file(path, &mut sink, config)?;
+            sink.flush().context("flush output")?;
         }
     } else {
         let stdout = io::stdout();
-        let mut writer = BufWriter::new(stdout.lock());
+        let mut sink = OutputSink::new_stdout(config.output.format, stdout);
         for path in &input_paths {
-            total_records += process_file(path, &mut writer, config)?;
+            total_records += process_file(path, &mut sink, config)?;
         }
-        writer.flush().context("flush stdout")?;
+        sink.flush().context("flush stdout")?;
     }
 
     let elapsed = Utc::now() - start;
@@ -643,7 +682,7 @@ fn output_path_for_input(output_dir: &Path, input: &Path, format: OutputFormat) 
     Ok(output_dir.join(format!("{}.{}", stem, extension)))
 }
 
-fn process_file(path: &Path, writer: &mut dyn Write, config: &Config) -> Result<usize> {
+fn process_file(path: &Path, sink: &mut OutputSink, config: &Config) -> Result<usize> {
     info!("processing {}", path.display());
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut reader = Reader::from_reader(BufReader::new(file));
@@ -670,14 +709,14 @@ fn process_file(path: &Path, writer: &mut dyn Write, config: &Config) -> Result<
             Ok(Event::Text(e)) => {
                 let text = e.xml_content()?.into_owned();
                 if let Some(record) = build_record(&text, &stack, path, config)? {
-                    emit_record(writer, &record, config)?;
+                    emit_record(sink, &record, config)?;
                     record_count += 1;
                 }
             }
             Ok(Event::CData(e)) => {
                 let text = e.xml_content()?.into_owned();
                 if let Some(record) = build_record(&text, &stack, path, config)? {
-                    emit_record(writer, &record, config)?;
+                    emit_record(sink, &record, config)?;
                     record_count += 1;
                 }
             }
@@ -815,14 +854,15 @@ fn normalize_text(input: &str, parse: &ParseConfig) -> Option<String> {
     }
 }
 
-fn emit_record(writer: &mut dyn Write, record: &TextRecord, config: &Config) -> Result<()> {
-    match config.output.format {
-        OutputFormat::Plain => emit_plain(writer, record, &config.emit),
-        OutputFormat::Jsonl => emit_jsonl(writer, record),
-    }
+fn emit_record(sink: &mut OutputSink, record: &TextRecord, config: &Config) -> Result<()> {
+    let rendered = match config.output.format {
+        OutputFormat::Plain => render_plain(record, &config.emit),
+        OutputFormat::Jsonl => render_jsonl(record),
+    }?;
+    sink.write_record(&rendered)
 }
 
-fn emit_plain(writer: &mut dyn Write, record: &TextRecord, emit: &EmitConfig) -> Result<()> {
+fn render_plain(record: &TextRecord, emit: &EmitConfig) -> Result<String> {
     let mut buffer = String::new();
 
     if record.kind == "heading" && emit.heading_blank_line {
@@ -838,17 +878,125 @@ fn emit_plain(writer: &mut dyn Write, record: &TextRecord, emit: &EmitConfig) ->
     buffer.push_str(&record.text);
     buffer.push_str(&emit.record_delimiter);
 
-    writer
-        .write_all(buffer.as_bytes())
-        .context("write output")?;
-    Ok(())
+    Ok(buffer)
 }
 
-fn emit_jsonl(writer: &mut dyn Write, record: &TextRecord) -> Result<()> {
+fn render_jsonl(record: &TextRecord) -> Result<String> {
     let json = serde_json::to_string(record).context("serialize json record")?;
-    writer
-        .write_all(json.as_bytes())
-        .context("write json record")?;
-    writer.write_all(b"\n").context("write newline")?;
-    Ok(())
+    Ok(format!("{}\n", json))
+}
+
+enum OutputTarget {
+    SingleFile,
+    Stdout,
+}
+
+struct OutputSink {
+    target: OutputTarget,
+    format: OutputFormat,
+    overwrite: bool,
+    split_max_bytes: Option<u64>,
+    writer: WriterKind,
+    bytes_written: u64,
+    part_index: u32,
+    base_path: Option<PathBuf>,
+}
+
+enum WriterKind {
+    File(BufWriter<File>),
+    Stdout(BufWriter<io::Stdout>),
+}
+
+impl OutputSink {
+    fn new_file(
+        path: PathBuf,
+        format: OutputFormat,
+        overwrite: bool,
+        split_max_bytes: Option<u64>,
+    ) -> Result<Self> {
+        let writer = create_writer(&path, overwrite)?;
+        Ok(Self {
+            target: OutputTarget::SingleFile,
+            format,
+            overwrite,
+            split_max_bytes,
+            writer: WriterKind::File(writer),
+            bytes_written: 0,
+            part_index: 0,
+            base_path: Some(path),
+        })
+    }
+
+    fn new_stdout(format: OutputFormat, stdout: io::Stdout) -> Self {
+        Self {
+            target: OutputTarget::Stdout,
+            format,
+            overwrite: false,
+            split_max_bytes: None,
+            writer: WriterKind::Stdout(BufWriter::new(stdout)),
+            bytes_written: 0,
+            part_index: 0,
+            base_path: None,
+        }
+    }
+
+    fn write_record(&mut self, record: &str) -> Result<()> {
+        if let Some(limit) = self.split_max_bytes {
+            if matches!(self.target, OutputTarget::SingleFile)
+                && self.bytes_written > 0
+                && self.bytes_written + record.as_bytes().len() as u64 > limit
+            {
+                self.rotate_file()?;
+            }
+        }
+
+        match &mut self.writer {
+            WriterKind::File(writer) => writer
+                .write_all(record.as_bytes())
+                .context("write output")?,
+            WriterKind::Stdout(writer) => writer
+                .write_all(record.as_bytes())
+                .context("write output")?,
+        }
+
+        self.bytes_written += record.as_bytes().len() as u64;
+        Ok(())
+    }
+
+    fn rotate_file(&mut self) -> Result<()> {
+        let base = self
+            .base_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing base output path"))?;
+        self.part_index += 1;
+        let rotated = split_path(base, self.part_index, self.format)?;
+        info!(
+            "splitting output at {} bytes -> {}",
+            self.bytes_written,
+            rotated.display()
+        );
+        self.writer = WriterKind::File(create_writer(&rotated, self.overwrite)?);
+        self.bytes_written = 0;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        match &mut self.writer {
+            WriterKind::File(writer) => writer.flush().context("flush output"),
+            WriterKind::Stdout(writer) => writer.flush().context("flush output"),
+        }
+    }
+}
+
+fn split_path(base: &Path, part_index: u32, format: OutputFormat) -> Result<PathBuf> {
+    let stem = base
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| anyhow!("invalid output file name: {}", base.display()))?;
+    let extension = match format {
+        OutputFormat::Plain => "txt",
+        OutputFormat::Jsonl => "jsonl",
+    };
+    let parent = base.parent().unwrap_or_else(|| Path::new("."));
+    Ok(parent.join(format!("{}.part{:03}.{}", stem, part_index, extension)))
 }

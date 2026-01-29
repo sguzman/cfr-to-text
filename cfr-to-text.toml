@@ -28,6 +28,8 @@ heading_blank_line = true
 output_dir = "out"
 format = "Plain"
 overwrite = false
+split_max_bytes = 1048576
+# Set to 0 to disable splitting
 
 [logging]
 level = "info"
