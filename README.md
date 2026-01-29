@@ -64,7 +64,6 @@ include_elements = []
 exclude_elements = []
 heading_elements = ["HD", "HED"]
 paragraph_elements = ["P", "FP"]
-max_depth = null
 min_text_len = 1
 strip_whitespace = true
 collapse_whitespace = true
@@ -81,7 +80,6 @@ heading_blank_line = true
 
 [output]
 output_dir = "out"
-output_file = null
 format = "Plain"
 overwrite = false
 ```
