@@ -1,114 +1,52 @@
 # cfr-to-text
 
-Extract text from CFR XML files (Code of Federal Regulations) into plain text or JSONL.
+`cfr-to-text` extracts text from Code of Federal Regulations XML files into plain text or JSONL.
 
-## Quick start
+## Intent
+
+Turn bulky CFR XML inputs into cleaner downstream-friendly text artifacts while preserving enough structure and metadata to support later indexing or analysis.
+
+## Ambition
+
+The output-format options and config-oriented workflow suggest a practical pipeline component for legal-text extraction rather than a browser or viewer.
+
+## Current Status
+
+The repo is a focused single-binary CLI with a config file and a mature usage-oriented README. It looks purpose-built and relatively complete for its current scope.
+
+## Core Capabilities Or Focus Areas
+
+- Read CFR XML inputs.
+- Emit plain text or JSONL output.
+- Use config-driven extraction behavior.
+- Carry forward element/file metadata when requested.
+- Produce chunked or split outputs depending on configuration.
+
+## Project Layout
+
+- `src/`: Rust source for the main crate or application entrypoint.
+- `Cargo.toml`: crate or workspace manifest and the first place to check for package structure.
+
+## Setup And Requirements
+
+- Rust toolchain.
+- CFR XML source files.
+- Optional `cfr-to-text.toml` configuration for repeatable runs.
+
+## Build / Run / Test Commands
 
 ```bash
-# Build
 cargo build
-
-# Use the default config (cfr-to-text.toml)
-cargo run -- extract
-
-# Override inputs and output dir
-cargo run -- extract tmp/cfr/title-3 --output-dir out --format plain
-
-# Emit JSONL with element and file metadata
-cargo run -- extract tmp/cfr/title-3 --format jsonl --emit-element --emit-source
+cargo test
+cargo run -- --config cfr-to-text.toml
 ```
 
-## CLI overview
+## Notes, Limitations, Or Known Gaps
 
-```
-cfr-to-text [OPTIONS] <COMMAND>
+- The project is shaped around CFR XML specifically, not arbitrary legal-document extraction.
+- Output policy is largely controlled through the TOML config.
 
-Commands:
-  extract       Extract text from CFR XML inputs
-  init-config   Write a default config file
-  print-config  Print the effective config as TOML
-```
+## Next Steps Or Roadmap Hints
 
-Key extract flags:
-
-- `--config <FILE>`: Config file path (default `cfr-to-text.toml`)
-- `--input-dir <DIR>` / positional inputs
-- `--recursive` / `--no-recursive`
-- `--glob <GLOB>` (repeatable)
-- `--output-dir <DIR>` or `--output <FILE>`
-- `--format <plain|jsonl>`
-- `--split-max-bytes <BYTES>` / `--no-split`
-- `--include-element <NAME>` / `--exclude-element <NAME>`
-- `--heading-element <NAME>` / `--paragraph-element <NAME>`
-- `--emit-element` / `--emit-path` / `--emit-source`
-
-## Configuration
-
-The tool reads `cfr-to-text.toml` by default. You can generate a fresh config with:
-
-```bash
-cargo run -- init-config --path cfr-to-text.toml --overwrite
-```
-
-Sample config (trimmed):
-
-```toml
-[input]
-paths = ["tmp/cfr"]
-recursive = true
-follow_symlinks = false
-globs = ["**/*.xml"]
-xml_only = true
-
-[parse]
-include_elements = []
-exclude_elements = []
-heading_elements = ["HD", "HED"]
-paragraph_elements = ["P", "FP"]
-min_text_len = 1
-strip_whitespace = true
-collapse_whitespace = true
-preserve_line_breaks = false
-
-[emit]
-include_element_name = true
-include_element_path = false
-include_source_file = true
-record_delimiter = "\n"
-heading_prefix = "# "
-paragraph_prefix = ""
-heading_blank_line = true
-
-[output]
-output_dir = "out"
-format = "Plain"
-overwrite = false
-split_max_bytes = 1048576
-# Set to 0 to disable splitting
-```
-
-## Output formats
-
-- **Plain**: text lines with configurable heading/paragraph prefixes and delimiter.
-- **JSONL**: one JSON object per text segment with optional metadata fields.
-
-Example JSONL record:
-
-```json
-{"text":"Title 3","kind":"heading","element":"HD","path":null,"source":"tmp/cfr/title-3/CFR-2025-title3-vol1.xml"}
-```
-
-## Logging
-
-Logging is powered by `tracing` with configurable level and output format:
-
-```bash
-cargo run -- --log-level debug --log-format json extract tmp/cfr/title-3
-```
-
-Set `--log-file` to append logs to a file.
-
-## Notes
-
-- The parser is streaming and memory-efficient, suitable for large XML files.
-- Use `--include-element` / `--exclude-element` to control which tags emit text.
+- Keep the emitted schemas stable if downstream indexing or analytics tooling will depend on them.
+- Add more fixtures if CFR source variations become a maintenance issue.
